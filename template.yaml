@@ -1,0 +1,309 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'S3-to-EventBridge Integration - Multiple Buckets, Multiple consumers'
+Parameters:
+  AudioFilesBucketName:
+    Type: String
+    Default: patterns-s3-eventbridge-audiofiles-1
+  TranscribeFilesBucketName:
+    Type: String
+    Default: patterns-s3-eventbridge-transcribefiles-1
+  TranscribeCustomVocabularyName:
+    Type: String
+    Default: vocab-1
+  TranscribeDeferredExecution:
+    Type: String
+    Default: False
+  ComprehendFilesBucketName:
+    Type: String
+    Default: patterns-s3-eventbridge-comprehendfiles-1
+  LoggingBucketName:
+    Type: String
+    Default: patterns-s3-eventbridge-ct-logs-1
+Resources:
+  AudioFilesBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName:
+        'Fn::Sub': '${AudioFilesBucketName}'
+  TranscribeFilesBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName:
+        'Fn::Sub': '${TranscribeFilesBucketName}'
+  ComprehendFilesBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName:
+        'Fn::Sub': '${ComprehendFilesBucketName}'
+  LoggingBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName:
+        Ref: LoggingBucketName
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket:
+        Ref: LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: 's3:GetBucketAcl'
+            Resource:
+              'Fn::Sub': 'arn:aws:s3:::${LoggingBucket}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: 's3:PutObject'
+            Resource:
+              'Fn::Sub': 'arn:aws:s3:::${LoggingBucket}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': bucket-owner-full-control
+  myTrail:
+    Type: 'AWS::CloudTrail::Trail'
+    DependsOn:
+      - BucketPolicy
+    Properties:
+      TrailName:
+        Ref: LoggingBucketName
+      S3BucketName:
+        Ref: LoggingBucket
+      IsLogging: true
+      IsMultiRegionTrail: false
+      EventSelectors:
+        - DataResources:
+            - Type: 'AWS::S3::Object'
+              Values:
+                - 'Fn::Sub': 'arn:aws:s3:::${AudioFilesBucketName}/'
+                - 'Fn::Sub': 'arn:aws:s3:::${TranscribeFilesBucketName}/'
+      IncludeGlobalServiceEvents: false
+  
+  TranscribeDataAccessRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - transcribe.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: audio-analytics-transcribe-data-access-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource:
+                  - !Sub ${AudioFilesBucket.Arn}/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub ${TranscribeFilesBucket.Arn}/*
+  
+  EventConsumerTranscribeFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: audio-analytics-transcribe-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - 'Fn::Sub': >-
+                      arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:GetObject"
+                Resource:
+                  - !Sub ${AudioFilesBucket.Arn}/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub ${TranscribeFilesBucket.Arn}/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - !Sub ${TranscribeDataAccessRole.Arn}/*
+              - Effect: Allow
+                Action:
+                  - 'transcribe:StartTranscriptionJob'
+                Resource: '*'
+  EventConsumerComprehendFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: audio-analytics-comprehend-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - 'Fn::Sub': >-
+                      arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              - Effect: Allow
+                Action:
+                  - 'comprehend:DetectEntities'
+                  - 'comprehend:DetectKeyPhrases'
+                  - 'comprehend:DetectDominantLanguage'
+                  - 'comprehend:DetectSentiment'
+                  - 'comprehend:DetectSyntax'
+                Resource: '*'
+  EventConsumerTranscribeFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Description: Submits transcribe jobs
+      Handler: event_consumer_transcribe_function.lambda_function.lambda_handler
+      Runtime: python3.8
+      MemorySize: 512
+      Timeout: 900
+      Role:
+        'Fn::GetAtt':
+          - EventConsumerTranscribeFunctionRole
+          - Arn
+      Environment:
+        Variables:
+          APP_REGION:
+            Ref: 'AWS::Region'
+          TRANSCRIBE_REGION:
+            Ref: 'AWS::Region'
+          TRANSCRIBE_CUSTOM_VOCABULARY:
+            'Fn::Sub': '${TranscribeCustomVocabularyName}'
+          TRANSCRIBE_DEFERRED_EXECUTION:
+            'Fn::Sub': '${TranscribeDeferredExecution}'
+          TRANSCRIBE_DATA_ACCESS_ROLE_ARN:
+            'Fn::GetAtt':
+              - TranscribeDataAccessRole
+              - Arn
+          OUTPUT_BUCKET_NAME:
+            'Fn::Sub': '${TranscribeFilesBucketName}'
+          LOG_LEVEL: 'DEBUG'
+  EventConsumerComprehendFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Description: Submits comprehend jobs
+      Handler: event_consumer_comprehend_function.lambda_function.lambda_handler
+      Runtime: python3.8
+      MemorySize: 512
+      Timeout: 900
+      Role:
+        'Fn::GetAtt':
+          - EventConsumerTranscribeFunctionRole
+          - Arn
+      Environment:
+        Variables:
+          APP_REGION:
+            Ref: 'AWS::Region'
+          TRANSCRIBE_REGION:
+            Ref: 'AWS::Region'
+          OUTPUT_BUCKET_NAME:
+            'Fn::Sub': '${ComprehendFilesBucketName}'
+          LOG_LEVEL: 'DEBUG'
+  TranscribeEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: TranscribeEventRule
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail:
+          eventName:
+            - PutObject
+          requestParameters:
+            bucketName:
+              - 'Fn::Sub': '${AudioFilesBucketName}'
+      Targets:
+        - Arn:
+            'Fn::GetAtt':
+              - EventConsumerTranscribeFunction
+              - Arn
+          Id: EventConsumerTranscribeFunction
+  ComprehendEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: ComprehendEventRule
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail:
+          eventName:
+            - PutObject
+          requestParameters:
+            bucketName:
+              - 'Fn::Sub': '${TranscribeFilesBucketName}'
+      Targets:
+        - Arn:
+            'Fn::GetAtt':
+              - EventConsumerComprehendFunction
+              - Arn
+          Id: EventConsumerComprehendFunction
+  PermissionForEventsToInvokeEventConsumerTranscribeFunction:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName:
+        Ref: EventConsumerTranscribeFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn:
+        'Fn::GetAtt':
+          - TranscribeEventRule
+          - Arn
+  PermissionForEventsToInvokeEventConsumerComprehendFunction:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName:
+        Ref: EventConsumerComprehendFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn:
+        'Fn::GetAtt':
+          - ComprehendEventRule
+          - Arn

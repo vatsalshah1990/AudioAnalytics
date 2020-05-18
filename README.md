@@ -8,6 +8,9 @@
 * Transcribe
 * Comprehend
 
+## Pre-requisites
+1. [Docker installation on the host](https://docs.docker.com/get-docker/)
+
 ## Quick Start
 1. [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html)
 2. [Install SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html)

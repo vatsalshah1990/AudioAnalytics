@@ -62,7 +62,6 @@ Resources:
               Service: cloudtrail.amazonaws.com
             Action: 
               - 's3:PutObject'
-              - 's3:CopyObject'
             Resource:
               'Fn::Sub': 'arn:aws:s3:::${LoggingBucket}/AWSLogs/${AWS::AccountId}/*'
             Condition:
